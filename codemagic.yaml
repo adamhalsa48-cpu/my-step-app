@@ -1,0 +1,19 @@
+﻿workflows:
+  ios-unsigned-ipa:
+    name: Build Unsigned iOS IPA
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+    scripts:
+      - name: Build unsigned iOS app
+        script: |
+          cd ios/App
+          xcodebuild -project App.xcodeproj -scheme App -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+      - name: Package into IPA
+        script: |
+          mkdir -p Payload
+          cp -r ios/App/build/Build/Products/Release-iphoneos/App.app Payload/
+          zip -r StayFit.ipa Payload
+    artifacts:
+      - StayFit.ipa
