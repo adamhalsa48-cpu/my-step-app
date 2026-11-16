@@ -21,7 +21,7 @@ try {
     renameSync(source, backup)
     movedFiles.push([source, backup])
   }
-  const result = spawnSync('pnpm', ['exec', 'next', 'build'], {
+  const result = spawnSync('npx.cmd', ['next', 'build'], { shell: true,
     cwd: projectRoot,
     env: { ...process.env, STAYFIT_MOBILE_EXPORT: '1' },
     stdio: 'inherit',
