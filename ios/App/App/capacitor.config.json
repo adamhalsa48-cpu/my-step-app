@@ -1,0 +1,8 @@
+{
+	"appId": "com.stayfit.app",
+	"appName": "Stay Fit",
+	"webDir": "out",
+	"packageClassList": [
+		"CapacitorPedometerPlugin"
+	]
+}

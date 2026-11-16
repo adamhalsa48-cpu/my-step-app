@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSMotionUsageDescription</key>
+	<string>Stay Fit uses motion data to track your daily steps and activity when you choose to sync your phone.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Stay Fit uses the camera when you choose to scan a meal photo.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Stay Fit accesses selected photos when you choose to scan a meal.</string>
+</dict>
+</plist>
