@@ -7,9 +7,16 @@
       xcode: latest
       node: latest
     scripts:
-      - name: Prepare iOS project
+      - name: Build web assets and iOS project
         script: |
           npm install
+          echo "NEXT_PUBLIC_API_URL=https://vercel.app" > .env.local
+          rm -rf app/api proxy.ts
+          cat << 'EOF' > next.config.mjs
+          const nextConfig = { output: "export", images: { unoptimized: true } };
+          export default nextConfig;
+          EOF
+          npx next build
           rm -rf ios
           npx cap add ios
           npx cap sync ios
