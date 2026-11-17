@@ -9,13 +9,10 @@
     scripts:
       - name: Prepare iOS project
         script: |
-          if [ ! -d "ios/App" ]; then
-            npm install
-            npx cap add ios
-          fi
-          if [ -f "ios/App/Podfile" ]; then
-            cd ios/App && pod install && cd ../..
-          fi
+          npm install
+          rm -rf ios
+          npx cap add ios
+          npx cap sync ios
       - name: Build unsigned iOS app
         script: |
           cd ios/App
