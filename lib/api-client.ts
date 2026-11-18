@@ -65,7 +65,13 @@ export async function checkBackendAndSync(): Promise<BackendStatus> {
     await apiRequest('profile', { method: 'POST', body: JSON.stringify(profile) })
     await apiRequest('profile', {
       method: 'PATCH',
-      body: JSON.stringify({ dailyStepGoal: profile.dailyStepGoal, leaderboardOptIn: profile.leaderboardOptIn }),
+      body: JSON.stringify({
+        dailyStepGoal: profile.dailyStepGoal,
+        leaderboardOptIn: profile.leaderboardOptIn,
+        weeklyStepGoal: profile.weeklyStepGoal,
+        weeklyActiveDaysGoal: profile.weeklyActiveDaysGoal,
+        weeklyCalorieGoal: profile.weeklyCalorieGoal,
+      }),
     })
 
     for (const [day, entry] of Object.entries(steps)) {

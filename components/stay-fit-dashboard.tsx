@@ -2,22 +2,26 @@
 
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import useSWR from 'swr'
+import Image from 'next/image'
 import { useRouter } from 'next/navigation'
 import {
-  Activity, Apple, ArrowDownRight, ArrowRight, Bell, Check, ChevronRight, CircleHelp, Dumbbell,
-  Flame, Footprints, Home, LogOut, Medal, Plus, ScanLine, Settings, Sparkles, Target,
+  Activity, Apple, ArrowDownRight, ArrowRight, Bell, Check, ChevronRight, CircleHelp, Download, Dumbbell,
+  Flame, Footprints, Home, LogOut, Medal, Moon, Play, Plus, ScanLine, Settings, Smartphone, Sparkles, Sun, Target,
   TrendingUp, Trophy, UserPlus, Users, X,
 } from 'lucide-react'
 import {
-  cacheLocalMealPlan, cacheLocalWorkoutPlan, getDashboardData, getLocalMealPlan,
-  getLocalWorkoutPlan, markLocalMealSynced, saveLocalMeal, saveLocalSteps, saveLocalWorkout, signOutLocal,
-  updateLocalProfile,
-  type DashboardData, type FriendsData, type Meal, type MealPlan, type Profile, type WorkoutPlan,
+  cacheLocalMealPlan, cacheLocalWorkoutPlan, changeLocalPassword, DEFAULT_APPEARANCE, getDashboardData,
+  getLocalAppearancePreferences, getLocalMealPlan, getLocalNotificationsEnabled, getLocalWorkoutPlan,
+  markLocalMealSynced, saveLocalMeal, saveLocalSteps, saveLocalWorkout, signOutLocal,
+  updateLocalAppearancePreferences, updateLocalNotificationsEnabled, updateLocalProfile,
+  type AppearancePreferences, type DashboardData, type FriendsData, type Meal, type MealPlan, type Profile, type WorkoutPlan,
 } from '@/lib/local-store'
 import { apiRequest, checkBackendAndSync, type BackendStatus } from '@/lib/api-client'
+import { authClient } from '@/lib/auth-client'
 import { startStepTracking } from '@/lib/step-counter'
+import { ActivityInsights } from '@/components/activity-insights'
 
-type Section = 'Today' | 'Workouts' | 'Nutrition' | 'Leaderboard' | 'Settings'
+type Section = 'Today' | 'Workouts' | 'Nutrition' | 'Leaderboard' | 'Settings' | 'Download'
 
 const navItems: { label: Section; icon: typeof Home }[] = [
   { label: 'Today', icon: Home },
@@ -26,6 +30,30 @@ const navItems: { label: Section; icon: typeof Home }[] = [
   { label: 'Leaderboard', icon: Trophy },
 ]
 const categories = ['strength', 'cardio', 'walking', 'yoga', 'cycling', 'mobility'] as const
+
+type OfflineWorkout = {
+  title: string
+  category: (typeof categories)[number]
+  durationMinutes: number
+  focus: string
+  exercises: string[]
+}
+
+type WorkoutCoachMessage = { role: 'user' | 'assistant'; text: string }
+
+const OFFLINE_WORKOUTS: OfflineWorkout[] = [
+  { title: 'Full-body strength', category: 'strength', durationMinutes: 20, focus: 'A simple bodyweight circuit at your own pace.', exercises: ['Bodyweight squats', 'Wall push-ups', 'Glute bridges'] },
+  { title: 'Brisk walk', category: 'walking', durationMinutes: 15, focus: 'Build a comfortable walking rhythm.', exercises: ['Easy warm-up', 'Steady walk', 'Gentle cool-down'] },
+  { title: 'Mobility reset', category: 'mobility', durationMinutes: 10, focus: 'Move gently through a comfortable range.', exercises: ['Shoulder circles', 'Hip hinges', 'Supported balance'] },
+  { title: 'Recovery yoga', category: 'yoga', durationMinutes: 20, focus: 'A gentle sequence for an easy recovery day.', exercises: ['Cat-cow', 'Low lunge stretch', 'Child’s pose'] },
+]
+
+function formatWorkoutTime(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
 const localDay = (date = new Date()) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 const localWeek = () => {
   const monday = new Date()
@@ -48,9 +76,20 @@ export function StayFitDashboard({ initialProfile, userName }: { initialProfile:
   const [scanResult, setScanResult] = useState<Meal | null>(null)
   const [data, setData] = useState<DashboardData | null>(null)
   const [browserOnline, setBrowserOnline] = useState(true)
+  const [activeWorkout, setActiveWorkout] = useState<{ title: string; category: OfflineWorkout['category']; durationMinutes: number; endsAt: number } | null>(null)
+  const [remainingWorkoutSeconds, setRemainingWorkoutSeconds] = useState(0)
+  const [workoutCompletion, setWorkoutCompletion] = useState<{ title: string } | null>(null)
+  const [coachMessages, setCoachMessages] = useState<WorkoutCoachMessage[]>([])
+  const [coachQuestion, setCoachQuestion] = useState('')
+  const [coachBusy, setCoachBusy] = useState(false)
+  const [appearance, setAppearance] = useState<AppearancePreferences>(DEFAULT_APPEARANCE)
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false)
   const [planData, setPlanData] = useState<{ plan: MealPlan | null; day: string }>({ plan: null, day: '' })
   const [workoutPlanData, setWorkoutPlanData] = useState<{ plan: WorkoutPlan | null; weekOf: string }>({ plan: null, weekOf: '' })
   const stopTrackingRef = useRef<(() => Promise<void>) | null>(null)
+  const workoutTimerRef = useRef<number | null>(null)
+  const workoutCompletionAudioRef = useRef<HTMLAudioElement | null>(null)
+  const workoutAttemptsRef = useRef<number[]>([])
   const day = useMemo(localDay, [])
   const weekOf = useMemo(localWeek, [])
   const { data: backendStatus, mutate: refreshBackend } = useSWR<BackendStatus>(
@@ -71,6 +110,8 @@ export function StayFitDashboard({ initialProfile, userName }: { initialProfile:
     setData(getDashboardData(day))
     setPlanData({ plan: getLocalMealPlan(day), day })
     setWorkoutPlanData({ plan: getLocalWorkoutPlan(weekOf), weekOf })
+    setAppearance(getLocalAppearancePreferences())
+    setNotificationsEnabled(getLocalNotificationsEnabled())
     void refreshBackend()
   }
 
@@ -94,6 +135,7 @@ export function StayFitDashboard({ initialProfile, userName }: { initialProfile:
 
   useEffect(() => () => {
     if (stopTrackingRef.current) void stopTrackingRef.current()
+    if (workoutTimerRef.current !== null) window.clearInterval(workoutTimerRef.current)
   }, [])
 
   const profile = data?.profile ?? initialProfile
@@ -147,16 +189,85 @@ export function StayFitDashboard({ initialProfile, userName }: { initialProfile:
     }
   }
 
-  async function logWorkout(title: string, category = workoutCategory, minutes = Number(workoutMinutes)) {
+  async function logWorkout(title: string, category = workoutCategory, minutes = Number(workoutMinutes), showSavedNotice = true): Promise<boolean> {
+    const now = Date.now()
+    const recentAttempts = workoutAttemptsRef.current.filter((timestamp) => now - timestamp < 1000)
+    if (recentAttempts.length >= 5) {
+      workoutAttemptsRef.current = recentAttempts
+      notify('Slow down')
+      return false
+    }
+    workoutAttemptsRef.current = [...recentAttempts, now]
     setBusy(true)
     try {
       saveLocalWorkout({ title, category, durationMinutes: minutes })
       refreshLocalData()
-      notify('Workout saved on this device.')
+      if (showSavedNotice) notify('Workout saved on this device.')
+      return true
     } catch (cause) {
       notify(cause instanceof Error ? cause.message : 'Could not save your workout.')
+      return false
     } finally {
       setBusy(false)
+    }
+  }
+
+  function startWorkoutTimer(title: string, category: OfflineWorkout['category'], minutes: number) {
+    setWorkoutCompletion(null)
+    const durationMinutes = Math.round(minutes)
+    if (!Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 300) {
+      notify('Choose a workout duration from 1 to 300 minutes.')
+      return
+    }
+    if (activeWorkout) {
+      notify('Finish or cancel your current workout before starting another.')
+      return
+    }
+
+    const endsAt = Date.now() + durationMinutes * 60 * 1000
+    setActiveWorkout({ title, category, durationMinutes, endsAt })
+    setRemainingWorkoutSeconds(durationMinutes * 60)
+    notify(`${title} started. Your ${durationMinutes}-minute timer is running.`)
+    workoutTimerRef.current = window.setInterval(() => {
+      const remaining = Math.max(0, Math.ceil((endsAt - Date.now()) / 1000))
+      setRemainingWorkoutSeconds(remaining)
+      if (remaining === 0) {
+        if (workoutTimerRef.current !== null) window.clearInterval(workoutTimerRef.current)
+        workoutTimerRef.current = null
+        setActiveWorkout(null)
+        setWorkoutCompletion({ title })
+        void workoutCompletionAudioRef.current?.play().catch(() => undefined)
+        void logWorkout(title, category, durationMinutes, false).then((saved) => {
+          notify(saved ? 'Workout complete and saved.' : 'Timer complete, but the workout was not saved.')
+        })
+      }
+    }, 1000)
+  }
+
+  function cancelWorkoutTimer() {
+    if (workoutTimerRef.current !== null) window.clearInterval(workoutTimerRef.current)
+    workoutTimerRef.current = null
+    setActiveWorkout(null)
+    setRemainingWorkoutSeconds(0)
+    setWorkoutCompletion(null)
+    notify('Workout stopped. No workout was logged.')
+  }
+
+  async function askWorkoutCoach(question: string) {
+    const trimmedQuestion = question.trim()
+    if (trimmedQuestion.length < 3 || trimmedQuestion.length > 500) return notify('Enter a question between 3 and 500 characters.')
+    if (!canUseOnlineFeatures) return notify('Connect to the internet and sign in online to ask the workout coach.')
+
+    setCoachQuestion('')
+    setCoachBusy(true)
+    setCoachMessages((messages) => [...messages, { role: 'user', text: trimmedQuestion }])
+    try {
+      const result = await apiRequest<{ answer: string }>('workout-coach', { method: 'POST', body: JSON.stringify({ question: trimmedQuestion }) })
+      setCoachMessages((messages) => [...messages, { role: 'assistant', text: result.answer }])
+    } catch (cause) {
+      setCoachMessages((messages) => [...messages, { role: 'assistant', text: cause instanceof Error ? cause.message : 'The workout coach could not reply right now.' }])
+    } finally {
+      setCoachBusy(false)
     }
   }
 
@@ -282,12 +393,52 @@ export function StayFitDashboard({ initialProfile, userName }: { initialProfile:
     notify('Daily step goal saved on this device.')
   }
 
-  async function enableReminders() {
+  async function toggleReminders() {
+    if (notificationsEnabled) {
+      updateLocalNotificationsEnabled(false)
+      setNotificationsEnabled(false)
+      notify('Notifications disabled in Stay Fit on this device.')
+      return
+    }
     if (!('Notification' in window)) return notify('Notifications are not supported in this browser.')
-    const permission = await Notification.requestPermission()
+    const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission()
     if (permission !== 'granted') return notify('Notifications are off. You can change this in your browser settings.')
+    updateLocalNotificationsEnabled(true)
+    setNotificationsEnabled(true)
     new Notification('Stay Fit reminders are on', { body: 'We’ll keep you updated while Stay Fit is open on this device.' })
     notify('Notifications enabled for this device.')
+  }
+
+  function saveAppearance(patch: Partial<AppearancePreferences>) {
+    const nextAppearance = updateLocalAppearancePreferences(patch)
+    setAppearance(nextAppearance)
+    notify('Appearance saved on this device.')
+  }
+
+  async function updatePassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const submittedForm = event.currentTarget
+    const form = new FormData(submittedForm)
+    const currentPassword = String(form.get('currentPassword') ?? '')
+    const newPassword = String(form.get('newPassword') ?? '')
+    const confirmPassword = String(form.get('confirmPassword') ?? '')
+    if (newPassword.length < 8 || newPassword.length > 128) return notify('Choose a new password between 8 and 128 characters.')
+    if (newPassword !== confirmPassword) return notify('The new passwords do not match.')
+
+    setBusy(true)
+    try {
+      if (canUseOnlineFeatures) {
+        const result = await authClient.changePassword({ currentPassword, newPassword, revokeOtherSessions: false })
+        if (result.error) throw new Error('We could not verify your current password or update your account password.')
+      }
+      await changeLocalPassword(currentPassword, newPassword)
+      submittedForm.reset()
+      notify(canUseOnlineFeatures ? 'Password changed for your account and this device.' : 'Password changed on this device. Connect online to update your account password.')
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : 'The password could not be changed.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function signOut() {
@@ -310,13 +461,17 @@ export function StayFitDashboard({ initialProfile, userName }: { initialProfile:
   const suggestedCategory = suggestedSession?.category ?? (profile.fitnessGoal === 'build_muscle' ? 'strength' : 'walking')
   const suggestedTitle = suggestedSession?.title ?? (profile.fitnessGoal === 'build_muscle' ? 'Strength & balance' : 'A steady walk')
   const suggestedMinutes = suggestedSession?.durationMinutes ?? 25
+  const cachedOfflineWorkouts: OfflineWorkout[] = (workoutPlanData.plan?.sessions ?? [])
+    .filter((session) => !OFFLINE_WORKOUTS.some((workout) => workout.title === session.title))
+    .map((session) => ({ title: session.title, category: session.category, durationMinutes: session.durationMinutes, focus: session.focus, exercises: session.exercises }))
+  const offlineWorkouts = [...OFFLINE_WORKOUTS, ...cachedOfflineWorkouts]
 
-  if (!data) return <main className="sf-loading" aria-live="polite"><span className="sf-loading-mark">S</span><p>Opening your on-device dashboard…</p></main>
+  if (!data) return <main className="sf-loading" aria-live="polite"><Image className="sf-loading-wordmark" src="/stay-fit-wordmark.png" alt="Stay Fit" width={282} height={180} priority /><p>Opening your on-device dashboard…</p></main>
 
   return (
-    <main className="sf-shell">
+    <main className="sf-shell" data-theme={appearance.theme} data-accent={appearance.accent}>
       <aside className="sf-sidebar">
-        <a className="sf-brand" href="#today" aria-label="Stay Fit home"><span className="sf-mark">S</span><span>STAY FIT<span className="sf-brand-dot">.</span></span></a>
+        <a className="sf-brand" href="#today" aria-label="Stay Fit home"><Image className="sf-wordmark" src="/stay-fit-wordmark.png" alt="Stay Fit" width={282} height={180} priority /></a>
         <div className="sf-side-label">YOUR SPACE</div>
         <nav className="sf-nav" aria-label="Main navigation">
           {navItems.map(({ label, icon: Icon }) => <button key={label} className={`sf-nav-link ${section === label ? 'active' : ''}`} onClick={() => setSection(label)}><Icon size={19} strokeWidth={1.8} /><span>{label}</span>{label === 'Today' && <span className="sf-nav-indicator" />}</button>)}
@@ -325,17 +480,18 @@ export function StayFitDashboard({ initialProfile, userName }: { initialProfile:
       </aside>
 
       <section className="sf-main" id="today">
-        <header className="sf-topbar"><div className="sf-breadcrumb"><span>MY SPACE</span><ChevronRight size={14} /><strong>{section.toUpperCase()}</strong></div><div className="sf-top-actions"><span className="sf-date">{dateLabel.toUpperCase()}</span><span className={`connection-badge ${!browserOnline || backendStatus?.reachable === false ? 'offline' : canUseOnlineFeatures ? 'online' : 'checking'}`} role="status">{!browserOnline || backendStatus?.reachable === false ? 'OFFLINE MODE' : canUseOnlineFeatures ? 'ONLINE SYNC' : backendStatus?.reachable ? 'ONLINE SIGN-IN NEEDED' : 'CHECKING CONNECTION'}</span><button className="sf-icon-button notification-button" aria-label="Enable device notifications" onClick={enableReminders}><Bell size={18} /></button><div className="sf-avatar sf-avatar-small" aria-label={profile.displayName}>{profile.displayName.charAt(0).toUpperCase()}</div></div></header>
+        <header className="sf-topbar"><a className="sf-mobile-brand" href="#today" aria-label="Stay Fit home"><Image src="/stay-fit-wordmark.png" alt="Stay Fit" width={282} height={108} /></a><div className="sf-breadcrumb"><span>MY SPACE</span><ChevronRight size={14} /><strong>{section.toUpperCase()}</strong></div><div className="sf-top-actions"><span className="sf-date">{dateLabel.toUpperCase()}</span><button className="sf-download-button" onClick={() => setSection('Download')} aria-label="Get Stay Fit for Android or iPhone"><Download size={15} /><span>Get the app</span></button><span className={`connection-badge ${!browserOnline || backendStatus?.reachable === false ? 'offline' : canUseOnlineFeatures ? 'online' : 'checking'}`} role="status">{!browserOnline || backendStatus?.reachable === false ? 'OFFLINE MODE' : canUseOnlineFeatures ? 'ONLINE SYNC' : backendStatus?.reachable ? 'ONLINE SIGN-IN NEEDED' : 'CHECKING CONNECTION'}</span><button className={`sf-icon-button notification-button ${notificationsEnabled ? 'is-enabled' : ''}`} aria-label={notificationsEnabled ? 'Disable notifications' : 'Enable notifications'} aria-pressed={notificationsEnabled} onClick={toggleReminders}><Bell size={18} /></button><div className="sf-avatar sf-avatar-small" aria-label={profile.displayName}>{profile.displayName.charAt(0).toUpperCase()}</div></div></header>
 
         <div className="sf-content">
           {section === 'Today' && <>
             <div className="sf-greeting-row"><div><div className="sf-eyebrow"><span className="sf-live-dot" /> YOUR DAILY CHECK-IN</div><h1>{greeting}, {profile.displayName}<span className="sf-period">.</span></h1><p className="sf-subtitle">A little progress each day adds up to big results.</p></div><button className="sf-outline-button" onClick={() => setSection('Workouts')}><TrendingUp size={16} /> Weekly report</button></div>
+            <ActivityInsights day={day} profile={profile} canSyncOnline={canUseOnlineFeatures} onNotice={notify} />
             <div className="sf-grid">
-              <section className="sf-card sf-steps-card"><div className="sf-card-heading"><div><span className="sf-card-kicker">DAILY MOVEMENT</span><h2>Steps</h2></div><button className="sf-more" onClick={() => logSteps(Math.min(steps + 500, 200000))} aria-label="Add 500 steps">+500</button></div><div className="sf-steps-body"><div className="sf-ring-wrap"><svg className="sf-ring" viewBox="0 0 120 120" role="img" aria-label={`${steps.toLocaleString()} of ${target.toLocaleString()} steps`}><circle className="sf-ring-track" cx="60" cy="60" r="51" /><circle className="sf-ring-progress" cx="60" cy="60" r="51" strokeDasharray={`${Math.min(steps / target, 1) * 320} 320`} /></svg><div className="sf-ring-center"><Footprints size={19} /><strong>{(steps / 1000).toFixed(1)}k</strong><span>STEPS</span></div></div><div className="sf-step-copy"><div className="sf-number">{steps.toLocaleString()}<span> / {target.toLocaleString()}</span></div><p>{steps >= target ? 'You hit your daily step goal. Great job showing up.' : <>You&apos;re building a good rhythm. <strong>{Math.max(target - steps, 0).toLocaleString()} more</strong> to hit your goal.</>}</p><button className="sf-text-link" onClick={() => logSteps(Math.min(steps + 250, 200000))}>Log a short walk <ArrowRight size={15} /></button></div></div><div className="sf-card-footer"><span><span className="sf-status-dot" /> {data.stepSource === 'manual' ? 'MANUAL ENTRY' : 'PHONE SYNC'}</span><span>{data.stepSource === 'manual' ? 'Health sync needs the native app' : 'Synced from your phone'}</span></div></section>
+              <section className="sf-card sf-steps-card"><div className="sf-card-heading"><div><span className="sf-card-kicker">DAILY MOVEMENT</span><h2>Steps</h2></div><button className="sf-more" onClick={() => logSteps(Math.min(steps + 500, 200000))} aria-label="Add 500 steps">+500</button></div><div className="sf-steps-body"><div className="sf-ring-wrap"><svg className="sf-ring" viewBox="0 0 120 120" role="img" aria-label={`${steps.toLocaleString()} of ${target.toLocaleString()} steps`}><circle className="sf-ring-track" cx="60" cy="60" r="51" /><circle className="sf-ring-progress" cx="60" cy="60" r="51" strokeDasharray={`${Math.min(steps / target, 1) * 320} 320`} /></svg><div className="sf-ring-center"><Footprints size={19} /><strong>{(steps / 1000).toFixed(1)}k</strong><span>STEPS</span></div></div><div className="sf-step-copy"><div className="sf-number">{steps.toLocaleString()}<span> / {target.toLocaleString()}</span></div><p>{steps >= target ? 'You hit your daily step goal. Great job showing up.' : <>You&apos;re building a good rhythm. <strong>{Math.max(target - steps, 0).toLocaleString()} more</strong> to hit your goal.</>}</p><button className="sf-text-link" onClick={() => logSteps(Math.min(steps + 250, 200000))}>Log a short walk <ArrowRight size={15} /></button></div></div><div className="sf-card-footer"><span><span className="sf-status-dot" /> {data.stepSource === 'apple-watch' ? 'APPLE HEALTH' : data.stepSource === 'manual' ? 'MANUAL ENTRY' : 'PHONE SYNC'}</span><span>{data.stepSource === 'apple-watch' ? 'Synced from Apple Health' : data.stepSource === 'manual' ? 'Health sync needs the native app' : 'Synced from your phone'}</span></div></section>
 
               <section className="sf-card sf-calories-card"><div className="sf-card-heading"><div><span className="sf-card-kicker">ESTIMATED ACTIVITY</span><h2>Calories burned</h2></div><span className="sf-round-icon"><Flame size={18} /></span></div><div className="sf-calorie-number">{workoutCalories.toLocaleString()} <span>kcal</span></div><div className="sf-calorie-meta"><span><ArrowDownRight size={14} /> {data.stats.workoutsThisWeek} workouts this week</span><span>Based on your logged activity · estimates only</span></div><div className="sf-bars" aria-label="Steps over the last seven days">{weeklyBars.map((item, index) => <div className="sf-bar-wrap" key={item.day}><div className={`sf-bar ${index === 6 ? 'highlight' : ''}`} style={{ height: `${Math.max(8, (item.steps / maxSteps) * 100)}%` }} /><span>{new Date(`${item.day}T12:00:00`).toLocaleDateString(undefined, { weekday: 'narrow' })}</span></div>)}</div></section>
 
-              <section className="sf-card sf-workout-card"><div className="sf-card-heading"><div><span className="sf-card-kicker">MADE FOR YOUR GOAL</span><h2>Today&apos;s movement</h2></div><button className="sf-text-link sf-view-plan" onClick={() => setSection('Workouts')}>View workouts <ArrowRight size={15} /></button></div><div className="sf-workout-feature"><div className="sf-workout-art"><Dumbbell size={30} strokeWidth={1.3} /><span>{profile.fitnessGoal === 'build_muscle' ? 'STRENGTH' : 'MOVE'}</span></div><div className="sf-workout-info"><span className="sf-workout-tag">{profile.fitnessGoal.replaceAll('_', ' ').toUpperCase()}</span><h3>{suggestedTitle}</h3><p>{suggestedMinutes} min <span /> Beginner-friendly <span /> Flexible</p></div><button className="sf-play-button" onClick={() => logWorkout(suggestedTitle, suggestedCategory, suggestedMinutes)} disabled={busy} aria-label="Log suggested workout"><ArrowRight size={19} /></button></div><div className="sf-workout-progress"><span style={{ width: `${Math.min((data.stats.workoutsThisWeek / 4) * 100, 100)}%` }} /></div><div className="sf-workout-foot"><span>{data.stats.workoutsThisWeek} WORKOUT{data.stats.workoutsThisWeek === 1 ? '' : 'S'} THIS WEEK</span><button onClick={() => setSection('Workouts')}>Log activity</button></div></section>
+              <section className="sf-card sf-workout-card"><div className="sf-card-heading"><div><span className="sf-card-kicker">MADE FOR YOUR GOAL</span><h2>Today&apos;s movement</h2></div><button className="sf-text-link sf-view-plan" onClick={() => setSection('Workouts')}>View workouts <ArrowRight size={15} /></button></div><div className="sf-workout-feature"><div className="sf-workout-art"><Dumbbell size={30} strokeWidth={1.3} /><span>{profile.fitnessGoal === 'build_muscle' ? 'STRENGTH' : 'MOVE'}</span></div><div className="sf-workout-info"><span className="sf-workout-tag">{profile.fitnessGoal.replaceAll('_', ' ').toUpperCase()}</span><h3>{suggestedTitle}</h3><p>{suggestedMinutes} min <span /> Beginner-friendly <span /> Flexible</p></div><button className="sf-start-button" onClick={() => startWorkoutTimer(suggestedTitle, suggestedCategory, suggestedMinutes)} disabled={busy || Boolean(activeWorkout)}><Play size={15} fill="currentColor" /> Start workout</button></div><div className="sf-workout-progress"><span style={{ width: `${Math.min((data.stats.workoutsThisWeek / 4) * 100, 100)}%` }} /></div><div className="sf-workout-foot"><span>{data.stats.workoutsThisWeek} WORKOUT{data.stats.workoutsThisWeek === 1 ? '' : 'S'} THIS WEEK</span><button onClick={() => setSection('Workouts')}>Log activity</button></div></section>
 
               <section className="sf-card sf-nutrition-card"><div className="sf-card-heading"><div><span className="sf-card-kicker">NUTRITION, MADE SIMPLE</span><h2>On your plate</h2></div><button className="sf-scan-button" onClick={() => setSection('Nutrition')}><ScanLine size={16} /> Scan meal</button></div><div className="sf-meal-feature"><div className="sf-meal-placeholder" aria-hidden="true"><Apple size={24} /></div><div className="sf-meal-copy"><span className="sf-meal-label">TODAY&apos;S LOG · {meals.length} MEAL{meals.length === 1 ? '' : 'S'}</span><h3>{meals[0]?.title ?? 'Start with what you enjoy'}</h3><p>{meals[0] ? `${meals[0].caloriesKcal} estimated kcal · ${meals[0].proteinGrams}g protein` : 'Build a flexible meal plan around your preferences.'}</p><div className="sf-macro-row"><span><b>{totalCalories}</b> kcal</span><i /><span><b>{Math.round(totalProtein)}g</b> protein</span></div></div></div><button className="sf-meal-plan-link" onClick={() => setSection('Nutrition')}>See your meal plan <ArrowRight size={15} /></button></section>
 
@@ -346,7 +502,9 @@ export function StayFitDashboard({ initialProfile, userName }: { initialProfile:
 
           {section === 'Workouts' && <>
             <PageHeading eyebrow="MOVE YOUR WAY" title="Workouts" description={`Your plan is shaped around your goal to ${goalLabels[profile.fitnessGoal] ?? 'keep moving'}. Adjust it whenever you like.`} />
-            <div className="content-columns"><section className="sf-card app-panel"><div className="sf-card-heading"><div><span className="sf-card-kicker">LOG AN ACTIVITY</span><h2>What did you do?</h2></div><span className="sf-round-icon"><Activity size={18} /></span></div><form className="app-form" onSubmit={(event) => { event.preventDefault(); void logWorkout(`${workoutCategory[0].toUpperCase()}${workoutCategory.slice(1)} session`) }}><label>Activity<select value={workoutCategory} onChange={(event) => setWorkoutCategory(event.target.value as typeof workoutCategory)}>{categories.map((category) => <option key={category} value={category}>{category[0].toUpperCase() + category.slice(1)}</option>)}</select></label><label>Duration (minutes)<input type="number" min="1" max="300" value={workoutMinutes} onChange={(event) => setWorkoutMinutes(event.target.value)} required /></label><button className="primary-action" type="submit" disabled={busy}><Plus size={16} /> Save workout</button><p className="form-footnote">Calories are estimated from activity type, duration, and your profile. They are not a medical measurement.</p></form></section><section className="sf-card app-panel"><div className="sf-card-heading"><div><span className="sf-card-kicker">PERSONALIZED TO YOUR GOAL</span><h2>Weekly movement plan</h2></div><button className="sf-scan-button" disabled={busy || !canUseOnlineFeatures} onClick={generateWorkoutPlan}><Sparkles size={15} /> {workoutPlanData?.plan ? 'Refresh plan' : 'Create plan'}</button></div>{!canUseOnlineFeatures && <FeatureGate browserOnline={browserOnline} backendStatus={backendStatus} onConnect={() => router.push('/auth')} />} {workoutPlanData?.plan ? <><p className="panel-copy">{workoutPlanData.plan.summary}</p><div className="workout-plan-list">{workoutPlanData.plan.sessions.map((session) => <article className="workout-session" key={session.day}><span className="plan-time">{session.day} · {session.durationMinutes} MIN</span><h3>{session.title}</h3><p>{session.focus}</p><ul>{session.exercises.map((exercise) => <li key={exercise}>{exercise}</li>)}</ul><p className="workout-rest-note">{session.restNote}</p><button className="sf-text-link" disabled={busy} onClick={() => logWorkout(session.title, session.category, session.durationMinutes)}>Log this session <ArrowRight size={14} /></button></article>)}</div></> : <EmptyState icon={<Sparkles size={20} />} title="A plan shaped around your goal" text="Generate three flexible, beginner-friendly sessions based on your profile. You can switch to a fresh plan any time." action={<button className="primary-action" disabled={busy} onClick={generateWorkoutPlan}>Create my plan <ArrowRight size={15} /></button>} />}</section></div>
+            <div className="content-columns"><section className="sf-card app-panel"><div className="sf-card-heading"><div><span className="sf-card-kicker">LOG AN ACTIVITY</span><h2>What did you do?</h2></div><span className="sf-round-icon"><Activity size={18} /></span></div><form className="app-form" onSubmit={(event) => { event.preventDefault(); void logWorkout(`${workoutCategory[0].toUpperCase()}${workoutCategory.slice(1)} session`) }}><label>Activity<select value={workoutCategory} onChange={(event) => setWorkoutCategory(event.target.value as typeof workoutCategory)}>{categories.map((category) => <option key={category} value={category}>{category[0].toUpperCase() + category.slice(1)}</option>)}</select></label><label>Duration (minutes)<input type="number" min="1" max="300" value={workoutMinutes} onChange={(event) => setWorkoutMinutes(event.target.value)} disabled={Boolean(activeWorkout)} required /></label>{activeWorkout && <div className="workout-timer" role="status" aria-live="polite"><div><span>WORKOUT IN PROGRESS</span><strong>{formatWorkoutTime(remainingWorkoutSeconds)}</strong><small>{activeWorkout.title} · {activeWorkout.durationMinutes} min</small></div><button className="secondary-action" type="button" onClick={cancelWorkoutTimer}>Cancel</button></div>}<div className="workout-form-actions"><button className="primary-action" type="button" onClick={() => startWorkoutTimer(`${workoutCategory[0].toUpperCase()}${workoutCategory.slice(1)} session`, workoutCategory, Number(workoutMinutes))} disabled={busy || Boolean(activeWorkout)}><Play size={15} fill="currentColor" /> Start workout</button><button className="secondary-action" type="submit" disabled={busy || Boolean(activeWorkout)}><Plus size={16} /> Save workout</button></div><p className="form-footnote">Calories are estimated from activity type, duration, and your profile. They are not a medical measurement.</p></form></section><section className="sf-card app-panel"><div className="sf-card-heading"><div><span className="sf-card-kicker">PERSONALIZED TO YOUR GOAL</span><h2>Weekly movement plan</h2></div><button className="sf-scan-button" disabled={busy || !canUseOnlineFeatures} onClick={generateWorkoutPlan}><Sparkles size={15} /> {workoutPlanData?.plan ? 'Refresh plan' : 'Create plan'}</button></div>{!canUseOnlineFeatures && <FeatureGate browserOnline={browserOnline} backendStatus={backendStatus} onConnect={() => router.push('/auth')} />} {workoutPlanData?.plan ? <><p className="panel-copy">{workoutPlanData.plan.summary}</p><div className="workout-plan-list">{workoutPlanData.plan.sessions.map((session) => <article className="workout-session" key={session.day}><span className="plan-time">{session.day} · {session.durationMinutes} MIN</span><h3>{session.title}</h3><p>{session.focus}</p><ul>{session.exercises.map((exercise) => <li key={exercise}>{exercise}</li>)}</ul><p className="workout-rest-note">{session.restNote}</p><button className="sf-text-link" disabled={busy} onClick={() => logWorkout(session.title, session.category, session.durationMinutes)}>Log this session <ArrowRight size={14} /></button></article>)}</div></> : <EmptyState icon={<Sparkles size={20} />} title="A plan shaped around your goal" text="Generate three flexible, beginner-friendly sessions based on your profile. You can switch to a fresh plan any time." action={<button className="primary-action" disabled={busy} onClick={generateWorkoutPlan}>Create my plan <ArrowRight size={15} /></button>} />}</section></div>
+            <section className="sf-card app-panel offline-workout-panel" aria-labelledby="offline-workouts-title"><div className="sf-card-heading"><div><span className="sf-card-kicker">READY WITHOUT INTERNET</span><h2 id="offline-workouts-title">Offline workouts</h2></div><span className="history-total">{offlineWorkouts.length} available</span></div><p className="panel-copy">These routines are saved with the app and can be started without a connection.</p><div className="offline-workout-grid">{offlineWorkouts.map((workout, index) => <article className="offline-workout-card" key={`${workout.title}-${index}`}><div className="offline-workout-meta"><span className="offline-badge">OFFLINE</span><span>{workout.durationMinutes} min</span></div><h3>{workout.title}</h3><p>{workout.focus}</p><ul>{workout.exercises.map((exercise) => <li key={exercise}>{exercise}</li>)}</ul><button className="primary-action" type="button" disabled={busy || Boolean(activeWorkout)} onClick={() => startWorkoutTimer(workout.title, workout.category, workout.durationMinutes)}><Play size={14} fill="currentColor" /> Start workout</button></article>)}</div></section>
+            <section className="sf-card app-panel workout-coach-panel"><div className="sf-card-heading"><div><span className="sf-card-kicker">ASK ABOUT MOVEMENT</span><h2>Workout coach</h2></div><span className="sf-round-icon"><Sparkles size={18} /></span></div><p className="panel-copy">Ask what an exercise is, which muscles it works, or for a beginner-friendly form tip.</p>{!canUseOnlineFeatures && <FeatureGate browserOnline={browserOnline} backendStatus={backendStatus} onConnect={() => router.push('/auth')} />}<div className="coach-quick-questions" aria-label="Example workout questions"><button type="button" onClick={() => void askWorkoutCoach('What are glute bridges, and what part of the body do they work?')}>What are glute bridges?</button><button type="button" onClick={() => void askWorkoutCoach('What muscles do bodyweight squats work?')}>What do squats work?</button></div><div className="coach-transcript" aria-live="polite" aria-label="Workout coach conversation">{coachMessages.length ? coachMessages.map((message, index) => <p className={`coach-message ${message.role}`} key={`${index}-${message.role}`}><strong>{message.role === 'user' ? 'You' : 'Coach'}</strong><span>{message.text}</span></p>) : <p className="coach-empty">Your questions and answers will appear here.</p>}{coachBusy && <p className="coach-thinking" role="status">Your coach is thinking…</p>}</div><form className="coach-composer" onSubmit={(event) => { event.preventDefault(); void askWorkoutCoach(coachQuestion) }}><label className="sr-only" htmlFor="workout-coach-question">Ask the workout coach</label><input id="workout-coach-question" value={coachQuestion} onChange={(event) => setCoachQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.nativeEvent.isComposing || event.keyCode === 229)) event.preventDefault() }} maxLength={500} placeholder="Ask about an exercise…" disabled={!canUseOnlineFeatures || coachBusy} /><button className="primary-action" type="submit" disabled={!canUseOnlineFeatures || coachBusy || coachQuestion.trim().length < 3}>{coachBusy ? 'Thinking…' : 'Ask'}</button></form><p className="form-footnote">General fitness education only—not medical advice. Stop if a movement causes pain.</p></section>
             <section className="sf-card app-panel history-panel"><div className="sf-card-heading"><div><span className="sf-card-kicker">YOUR MOVEMENT</span><h2>This week</h2></div><span className="history-total">{data.workoutsThisWeek.length} logged</span></div>{data.workoutsThisWeek.length ? <div className="history-list">{data.workoutsThisWeek.map((workout) => <div className="history-row" key={workout.id}><span className="history-icon"><Dumbbell size={16} /></span><div><strong>{workout.title}</strong><small>{workout.category} · {workout.durationMinutes} min · {new Date(workout.completedAt).toLocaleDateString()}</small></div><span>{workout.caloriesBurned} kcal est.</span></div>)}</div> : <EmptyState icon={<Dumbbell size={20} />} title="Your first workout starts here" text="Log an activity when you finish. It will stay in your personal history." />}</section>
           </>}
 
@@ -368,14 +526,23 @@ export function StayFitDashboard({ initialProfile, userName }: { initialProfile:
 
           {section === 'Settings' && <>
             <PageHeading eyebrow="YOUR ACCOUNT" title="Settings" description="Keep your goals and privacy choices up to date." />
-            <div className="content-columns"><section className="sf-card app-panel"><span className="sf-card-kicker">DAILY MOVEMENT</span><h2>Your step goal</h2><p className="panel-copy">Choose a personal target that feels realistic for you. You can adjust it as your routine changes.</p><form className="app-form inline-setting" onSubmit={changeStepGoal}><label>Steps per day<input type="number" name="dailyStepGoal" min="1000" max="50000" step="500" defaultValue={profile.dailyStepGoal} required /></label><button className="primary-action" type="submit">Save goal <Check size={15} /></button></form></section><section className="sf-card app-panel"><span className="sf-card-kicker">DEVICE NOTIFICATIONS</span><h2>Gentle reminders</h2><p className="panel-copy">Allow notifications on this device for an in-session reminder. Browser background delivery depends on your platform and is not guaranteed.</p><button className="secondary-action" onClick={enableReminders}><Bell size={16} /> Enable notifications</button></section></div>
+            <div className="content-columns"><section className="sf-card app-panel"><span className="sf-card-kicker">DAILY MOVEMENT</span><h2>Your step goal</h2><p className="panel-copy">Choose a personal target that feels realistic for you. You can adjust it as your routine changes.</p><form className="app-form inline-setting" onSubmit={changeStepGoal}><label>Steps per day<input type="number" name="dailyStepGoal" min="1000" max="50000" step="500" defaultValue={profile.dailyStepGoal} required /></label><button className="primary-action" type="submit">Save goal <Check size={15} /></button></form></section><section className="sf-card app-panel"><span className="sf-card-kicker">DEVICE NOTIFICATIONS</span><h2>Gentle reminders</h2><p className="panel-copy">Allow notifications on this device for an in-session reminder. Browser background delivery depends on your platform and is not guaranteed.</p><button className="secondary-action" onClick={toggleReminders} aria-pressed={notificationsEnabled}><Bell size={16} /> {notificationsEnabled ? 'Disable notifications' : 'Enable notifications'}</button></section></div>
+            <div className="content-columns settings-extra-panels"><section className="sf-card app-panel"><span className="sf-card-kicker">ACCOUNT SECURITY</span><h2>Change password</h2><p className="panel-copy">Use your current password to update the password for this device and your online account when connected.</p><form className="app-form" onSubmit={updatePassword}><label>Current password<input name="currentPassword" type="password" autoComplete="current-password" minLength={8} maxLength={128} required /></label><label>New password<input name="newPassword" type="password" autoComplete="new-password" minLength={8} maxLength={128} required /></label><label>Confirm new password<input name="confirmPassword" type="password" autoComplete="new-password" minLength={8} maxLength={128} required /></label><button className="primary-action" type="submit" disabled={busy}>Change password</button>{!canUseOnlineFeatures && <p className="form-footnote">You’re offline or not connected to your online account. The change will apply on this device only.</p>}</form></section><section className="sf-card app-panel"><span className="sf-card-kicker">PERSONALIZE YOUR SPACE</span><h2>Appearance</h2><p className="panel-copy">Choose a light or dark look and an accent color. Your choices are saved on this device.</p><fieldset className="appearance-fieldset"><legend>Color theme</legend><div className="appearance-options"><button type="button" className={`appearance-option ${appearance.theme === 'light' ? 'selected' : ''}`} aria-pressed={appearance.theme === 'light'} onClick={() => saveAppearance({ theme: 'light' })}><Sun size={16} /> Light</button><button type="button" className={`appearance-option ${appearance.theme === 'dark' ? 'selected' : ''}`} aria-pressed={appearance.theme === 'dark'} onClick={() => saveAppearance({ theme: 'dark' })}><Moon size={16} /> Dark</button></div></fieldset><fieldset className="appearance-fieldset"><legend>Accent color</legend><div className="appearance-swatches">{(['mono', 'sage', 'blue', 'coral'] as const).map((accent) => <button key={accent} type="button" className={`appearance-swatch ${appearance.accent === accent ? 'selected' : ''}`} data-accent-option={accent} aria-label={`Use ${accent} accent`} aria-pressed={appearance.accent === accent} onClick={() => saveAppearance({ accent })} />)}</div></fieldset><p className="appearance-current">Selected: {appearance.theme} theme · {appearance.accent} accent</p></section></div>
             <section className="sf-card app-panel signout-panel"><div><span className="sf-card-kicker">ACCOUNT</span><h2>{profile.displayName}</h2><p className="panel-copy">Signed in as {userName}. Your personal fitness records are scoped to this account.</p></div><button className="secondary-action" onClick={signOut}><LogOut size={16} /> Sign out</button></section>
+          </>}
+
+          {section === 'Download' && <>
+            <PageHeading eyebrow="STAY FIT ON YOUR PHONE" title="Get the app" description="Install Stay Fit on your phone for a smoother daily tracking experience. Choose your device for download and setup instructions." />
+            <DownloadInstructions />
           </>}
           <footer className="sf-footer"><span>SHOW UP FOR YOURSELF. THAT&apos;S ENOUGH.</span><span>STAY FIT<span className="sf-period">.</span> &nbsp;·&nbsp; YOUR PACE, YOUR PROGRESS</span></footer>
         </div>
       </section>
 
       <nav className="sf-mobile-nav" aria-label="Mobile navigation">{[...navItems, { label: 'Settings' as Section, icon: Settings }].map(({ label, icon: Icon }) => <button key={label} className={section === label ? 'active' : ''} onClick={() => setSection(label)}><Icon size={19} /><span>{label}</span></button>)}</nav>
+      <audio ref={workoutCompletionAudioRef} src="/workout-complete.mp3" preload="auto" />
+      {activeWorkout && <section className="workout-focus-screen" role="dialog" aria-modal="true" aria-labelledby="workout-focus-title" aria-describedby="workout-focus-description"><div className="workout-focus-content"><span className="sf-card-kicker">YOUR SESSION · {activeWorkout.category.toUpperCase()}</span><h1 id="workout-focus-title">{activeWorkout.title}</h1><p id="workout-focus-description">Stay present and move at a pace that feels right for you.</p><div className="workout-focus-timer" role="timer" aria-label={`${remainingWorkoutSeconds} seconds remaining`} aria-live="off">{formatWorkoutTime(remainingWorkoutSeconds)}</div><span className="workout-focus-caption">TIME REMAINING</span><button className="workout-stop-button" type="button" autoFocus onClick={cancelWorkoutTimer}>Stop workout</button></div></section>}
+      {workoutCompletion && <section className="workout-completion-backdrop" role="dialog" aria-modal="true" aria-labelledby="workout-completion-title"><div className="workout-completion-card"><span className="workout-completion-icon"><Check size={24} /></span><span className="sf-card-kicker">SESSION COMPLETE</span><h2 id="workout-completion-title">You did great.</h2><p>{workoutCompletion.title} is done. Take a breath—you showed up for yourself.</p><button className="workout-sound-button" type="button" onClick={() => { const audio = workoutCompletionAudioRef.current; if (audio) { audio.currentTime = 0; void audio.play().catch(() => notify('Sound is unavailable on this device right now.')) } }}>Play celebration sound</button><div className="workout-next-options"><span className="sf-card-kicker">WHAT WOULD YOU LIKE TO DO NEXT?</span>{offlineWorkouts.filter((workout) => workout.title !== workoutCompletion.title).slice(0, 3).map((workout) => <button key={workout.title} type="button" onClick={() => startWorkoutTimer(workout.title, workout.category, workout.durationMinutes)}><span><strong>{workout.title}</strong><small>{workout.durationMinutes} min · {workout.category}</small></span><ArrowRight size={16} /></button>)}<button className="workout-dashboard-button" type="button" autoFocus onClick={() => { setWorkoutCompletion(null); setSection('Today') }}>Back to dashboard</button></div></div></section>}
       {toast && <div className="sf-toast" role="status"><Check size={17} />{toast}<button onClick={() => setToast('')} aria-label="Dismiss"><X size={16} /></button></div>}
     </main>
   )
@@ -391,5 +558,61 @@ function EmptyState({ icon, title, text, action }: { icon: ReactNode; title: str
 
 function FeatureGate({ browserOnline, backendStatus, onConnect }: { browserOnline: boolean; backendStatus?: BackendStatus; onConnect: () => void }) {
   return <div className="feature-gate" role="status"><strong>Internet required for AI &amp; Friends</strong><span>Connect to the internet and sign in online to use meal scans, AI plans, and friend features. Your local tracking remains available.</span>{browserOnline && backendStatus?.reachable && !backendStatus.authenticated && <button className="small-action" type="button" onClick={onConnect}>Connect online account</button>}</div>
+}
+
+function DownloadInstructions() {
+  return <>
+    <div className="download-availability" role="status"><strong>Downloads are being prepared.</strong><span>The APK and IPA download buttons will be enabled when the files are added. iPhone IPA installs also need a supported signing and distribution method.</span></div>
+    <div className="content-columns download-platforms">
+      <section className="sf-card app-panel download-platform-card" aria-labelledby="android-download-title">
+        <div className="download-platform-icon"><Smartphone size={20} /></div>
+        <span className="sf-card-kicker">ANDROID</span>
+        <h2 id="android-download-title">Android phone</h2>
+        <p className="panel-copy">Android installs directly on your phone. No Windows PC or Mac is needed.</p>
+        <button className="primary-action download-file-button" type="button" disabled aria-describedby="android-download-status"><Download size={15} /> APK download coming soon</button>
+        <span className="download-status" id="android-download-status">The StayFit.apk link will appear here when the APK is provided.</span>
+        <ol className="download-steps">
+          <li>Tap the StayFit.apk download button and wait for the file to finish downloading.</li>
+          <li>Open the APK from your notifications or your Files app.</li>
+          <li>If Android asks, allow installs from the specific browser or file manager you used, then return to the installer.</li>
+          <li>Review the install prompt and tap <strong>Install</strong>. If Play Protect shows a warning, stop and verify the APK came from the official Stay Fit download before deciding whether to continue. Do not bypass an unexpected warning.</li>
+          <li>Open Stay Fit, create or sign in to your account, and allow Physical Activity and Camera access if you want step tracking and meal scanning.</li>
+        </ol>
+      </section>
+      <section className="sf-card app-panel download-platform-card" aria-labelledby="iphone-download-title">
+        <div className="download-platform-icon"><Apple size={20} /></div>
+        <span className="sf-card-kicker">IPHONE</span>
+        <h2 id="iphone-download-title">iPhone setup</h2>
+        <p className="panel-copy">The IPA needs to be signed and installed through an iOS-supported method. Pick the computer you&apos;ll use:</p>
+        <button className="primary-action download-file-button" type="button" disabled aria-describedby="iphone-download-status"><Download size={15} /> IPA download coming soon</button>
+        <span className="download-status" id="iphone-download-status">The StayFit.ipa file and install link will appear here when they&apos;re ready.</span>
+        <div className="iphone-guides">
+          <details className="install-guide" open>
+            <summary>Install with a Windows PC</summary>
+            <ol className="download-steps">
+              <li>Install the desktop version of iTunes from <a href="https://support.apple.com/downloads/itunes" target="_blank" rel="noreferrer">Apple&apos;s iTunes downloads</a>. Do not use the Microsoft Store version for this setup.</li>
+              <li>Download Sideloadly for Windows from <a href="https://sideloadly.io" target="_blank" rel="noreferrer">the Sideloadly website</a> and install it.</li>
+              <li>Connect your iPhone by USB, unlock it, and tap <strong>Trust</strong> if asked. Open Sideloadly and confirm your iPhone appears in the device list.</li>
+              <li>Select the StayFit.ipa file in Sideloadly and follow its current installation and signing instructions.</li>
+              <li>When installation completes, on iPhone open <strong>Settings → General → VPN &amp; Device Management</strong>. Trust the developer profile only if you initiated this install and recognize the signing account.</li>
+              <li>Open Stay Fit and allow Motion &amp; Fitness and Camera permissions if you want those features.</li>
+            </ol>
+          </details>
+          <details className="install-guide">
+            <summary>Install with a Mac</summary>
+            <ol className="download-steps">
+              <li>Download Sideloadly for macOS from <a href="https://sideloadly.io" target="_blank" rel="noreferrer">the Sideloadly website</a>, open the .dmg file, and drag Sideloadly into Applications. No iTunes install is needed on Mac.</li>
+              <li>If macOS blocks it, use Control-click → <strong>Open</strong> only after verifying you downloaded it from the official Sideloadly site and intend to use it.</li>
+              <li>Connect your iPhone by USB, unlock it, and tap <strong>Trust</strong> if asked. Open Sideloadly and confirm your iPhone appears in the device list.</li>
+              <li>Select the StayFit.ipa file in Sideloadly and follow its current installation and signing instructions.</li>
+              <li>When installation completes, on iPhone open <strong>Settings → General → VPN &amp; Device Management</strong>. Trust the developer profile only if you initiated this install and recognize the signing account.</li>
+              <li>Open Stay Fit and allow Motion &amp; Fitness and Camera permissions if you want those features.</li>
+            </ol>
+          </details>
+        </div>
+        <p className="install-security-note"><strong>Apple ID safety:</strong> Sideloadly is third-party software and may require account authentication to sign an app. Review its official guidance first; never share your password or verification code with another person, and stop if any prompt seems unexpected. Free-account signing may require reinstalling or refreshing the app about every 7 days.</p>
+      </section>
+    </div>
+  </>
 }
 

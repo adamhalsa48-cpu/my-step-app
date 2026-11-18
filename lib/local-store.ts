@@ -1,3 +1,34 @@
+export type AppearancePreferences = {
+  theme: 'light' | 'dark'
+  accent: 'mono' | 'sage' | 'blue' | 'coral'
+}
+
+export const DEFAULT_APPEARANCE: AppearancePreferences = { theme: 'light', accent: 'mono' }
+
+export type DailyActivity = {
+  activeCalories: number
+  restingHeartRate: number | null
+  averageHeartRate: number | null
+  workoutMinutes: number
+  distanceMeters: number
+  syncedAt: string | null
+}
+
+export const EMPTY_ACTIVITY: DailyActivity = {
+  activeCalories: 0,
+  restingHeartRate: null,
+  averageHeartRate: null,
+  workoutMinutes: 0,
+  distanceMeters: 0,
+  syncedAt: null,
+}
+
+export type WeeklyGoals = {
+  weeklyStepGoal: number
+  weeklyActiveDaysGoal: number
+  weeklyCalorieGoal: number
+}
+
 export type Profile = {
   username: string
   displayName: string
@@ -10,6 +41,9 @@ export type Profile = {
   muscleFocus: string[]
   dietaryPreferences: string[]
   dailyStepGoal: number
+  weeklyStepGoal: number
+  weeklyActiveDaysGoal: number
+  weeklyCalorieGoal: number
   leaderboardOptIn: boolean
 }
 
@@ -90,12 +124,15 @@ type LocalAccount = {
   salt: string
   profile: Profile
   steps: Record<string, { steps: number; source: string }>
+  activityDays?: Record<string, DailyActivity>
   workouts: Workout[]
   meals: Meal[]
   mealPlans: Record<string, MealPlan>
   workoutPlans: Record<string, WorkoutPlan>
   syncedMealIds?: number[]
   syncedWorkoutIds?: number[]
+  appearance?: AppearancePreferences
+  notificationsEnabled?: boolean
 }
 
 type Friendship = { id: number; fromUserId: string; toUserId: string; status: 'pending' | 'accepted' }
@@ -110,7 +147,16 @@ function readStore(): LocalStore {
   try {
     const value = JSON.parse(window.localStorage.getItem(STORE_KEY) || 'null') as Partial<LocalStore> | null
     return {
-      accounts: Array.isArray(value?.accounts) ? value.accounts : [],
+      accounts: Array.isArray(value?.accounts) ? value.accounts.map((account) => ({
+        ...account,
+        profile: {
+          ...account.profile,
+          weeklyStepGoal: account.profile.weeklyStepGoal ?? 70000,
+          weeklyActiveDaysGoal: account.profile.weeklyActiveDaysGoal ?? 5,
+          weeklyCalorieGoal: account.profile.weeklyCalorieGoal ?? 3500,
+        },
+        activityDays: account.activityDays ?? {},
+      })) : [],
       friendships: Array.isArray(value?.friendships) ? value.friendships : [],
     }
   } catch {
@@ -169,8 +215,9 @@ export async function createLocalAccount(input: {
     username,
     passwordHash: await hashPassword(input.password, salt),
     salt,
-    profile: { ...input.profile, username, dailyStepGoal: 8000, leaderboardOptIn: false },
+    profile: { ...input.profile, username, dailyStepGoal: 8000, weeklyStepGoal: 70000, weeklyActiveDaysGoal: 5, weeklyCalorieGoal: 3500, leaderboardOptIn: false },
     steps: {},
+    activityDays: {},
     workouts: [],
     meals: [],
     mealPlans: {},
@@ -199,6 +246,21 @@ export async function signInLocal(identity: string, password: string) {
   }
   window.localStorage.setItem(SESSION_KEY, account.id)
   return account.profile
+}
+
+export async function changeLocalPassword(currentPassword: string, newPassword: string) {
+  if (newPassword.length < 8 || newPassword.length > 128) throw new Error('Choose a password between 8 and 128 characters.')
+  const store = readStore()
+  const account = currentAccount(store)
+  if (!account) throw new Error('Your local session has ended. Sign in again.')
+  const currentHash = await hashPassword(currentPassword, account.salt)
+  if (currentHash !== account.passwordHash && (await legacyHashPassword(currentPassword, account.salt)) !== account.passwordHash) {
+    throw new Error('Your current password is incorrect.')
+  }
+  const salt = createId()
+  account.salt = salt
+  account.passwordHash = await hashPassword(newPassword, salt)
+  writeStore(store)
 }
 
 export function signOutLocal() {
@@ -238,6 +300,28 @@ export function getCurrentProfile() {
 export function getCurrentLocalAccount() {
   const account = currentAccount()
   return account ? { email: account.email, profile: account.profile } : null
+}
+
+export function getLocalAppearancePreferences(): AppearancePreferences {
+  const appearance = currentAccount()?.appearance
+  return { ...DEFAULT_APPEARANCE, ...appearance }
+}
+
+export function updateLocalAppearancePreferences(patch: Partial<AppearancePreferences>) {
+  const account = updateCurrentAccount((current) => {
+    current.appearance = { ...DEFAULT_APPEARANCE, ...current.appearance, ...patch }
+  })
+  return account.appearance ?? DEFAULT_APPEARANCE
+}
+
+export function getLocalNotificationsEnabled() {
+  return currentAccount()?.notificationsEnabled ?? false
+}
+
+export function updateLocalNotificationsEnabled(enabled: boolean) {
+  updateCurrentAccount((account) => {
+    account.notificationsEnabled = enabled
+  })
 }
 
 function updateCurrentAccount(update: (account: LocalAccount, store: LocalStore) => void) {
@@ -310,13 +394,47 @@ export function saveLocalSteps(day: string, steps: number, source: string) {
   return getDashboardData(day)
 }
 
+export function getLocalSteps(day: string) {
+  return currentAccount()?.steps[day]?.steps ?? 0
+}
+
+export function getLocalActivity(day: string): DailyActivity {
+  return { ...EMPTY_ACTIVITY, ...currentAccount()?.activityDays?.[day] }
+}
+
+export function saveLocalActivity(day: string, activity: DailyActivity) {
+  updateCurrentAccount((account) => {
+    account.activityDays ??= {}
+    account.activityDays[day] = { ...activity }
+  })
+}
+
+export function saveSyncedActivity(day: string, steps: number, activity: DailyActivity) {
+  saveLocalSteps(day, steps, 'apple-watch')
+  saveLocalActivity(day, activity)
+}
+
+export function getWeeklyGoals(): WeeklyGoals {
+  const profile = getCurrentProfile()
+  return {
+    weeklyStepGoal: profile?.weeklyStepGoal ?? 70000,
+    weeklyActiveDaysGoal: profile?.weeklyActiveDaysGoal ?? 5,
+    weeklyCalorieGoal: profile?.weeklyCalorieGoal ?? 3500,
+  }
+}
+
+export function saveWeeklyGoals(goals: WeeklyGoals) {
+  return updateLocalProfile(goals)
+}
+
 export function saveLocalWorkout(input: { title: string; category: string; durationMinutes: number }) {
   const durationMinutes = Math.round(input.durationMinutes)
   if (!input.title.trim() || durationMinutes < 1 || durationMinutes > 300) throw new Error('Enter a workout and duration from 1 to 300 minutes.')
   updateCurrentAccount((account) => {
     const factor: Record<string, number> = { strength: 6, cardio: 9, walking: 4, yoga: 3, cycling: 8, mobility: 3 }
     const caloriesBurned = Math.round((account.profile.weightKg || 65) * (factor[input.category] ?? 5) * durationMinutes / 60)
-    account.workouts.push({ id: Date.now(), title: input.title.trim().slice(0, 100), category: input.category, durationMinutes, caloriesBurned, completedAt: new Date().toISOString() })
+    const id = Math.max(Date.now(), ...account.workouts.map((workout) => workout.id + 1))
+    account.workouts.push({ id, title: input.title.trim().slice(0, 100), category: input.category, durationMinutes, caloriesBurned, completedAt: new Date().toISOString() })
   })
 }
 

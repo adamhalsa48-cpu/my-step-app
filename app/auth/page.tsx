@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import Image from 'next/image'
 import { ArrowRight, LockKeyhole } from 'lucide-react'
 import { getCurrentLocalAccount, signInLocal } from '@/lib/local-store'
 import { ApiRequestError, apiRequest, establishOnlineAccount } from '@/lib/api-client'
@@ -49,7 +50,7 @@ export default function SignInPage() {
   return (
     <main className="auth-page">
       <section className="auth-card" aria-labelledby="signin-title">
-        <Link className="sf-brand auth-brand" href="/" aria-label="Stay Fit home"><span className="sf-mark">S</span><span>STAY FIT<span className="sf-brand-dot">.</span></span></Link>
+        <Link className="sf-brand auth-brand" href="/" aria-label="Stay Fit home"><Image className="sf-wordmark" src="/stay-fit-wordmark.png" alt="Stay Fit" width={282} height={180} priority /></Link>
         <div className="auth-kicker"><LockKeyhole size={14} /> YOUR PRIVATE SPACE</div>
         <h1 id="signin-title">Welcome back.</h1>
         <p className="auth-subtitle">Pick up where you left off. Your progress is waiting.</p>

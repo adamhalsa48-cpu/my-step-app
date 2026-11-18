@@ -5,7 +5,7 @@ import './globals.css'
 
 export const metadata: Metadata = {
   title: 'STAY FIT — Your pace, your progress',
-  description: 'A personal fitness and wellbeing dashboard for building consistency, one day at a time.',
+  description: 'Track daily steps, Apple Health activity, step history, weekly goals, and movement streaks at your own pace.',
   generator: 'v0.app',
   applicationName: 'Stay Fit',
   appleWebApp: {

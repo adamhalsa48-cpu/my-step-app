@@ -2,6 +2,7 @@
 
 import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import Link from 'next/link'
+import Image from 'next/image'
 import { useRouter } from 'next/navigation'
 import { ArrowLeft, ArrowRight, Check, Dumbbell, Salad, Sparkles, UserRound } from 'lucide-react'
 import { createLocalAccount, type Profile } from '@/lib/local-store'
@@ -120,6 +121,9 @@ export function OnboardingFlow() {
         muscleFocus: muscleGoal ? draft.muscleFocus : [],
         dietaryPreferences: draft.dietaryPreferences,
         dailyStepGoal: 8000,
+        weeklyStepGoal: 70000,
+        weeklyActiveDaysGoal: 5,
+        weeklyCalorieGoal: 3500,
         leaderboardOptIn: false,
       }
       await createLocalAccount({ email: draft.email, password: draft.password, profile })
@@ -170,7 +174,7 @@ export function OnboardingFlow() {
 
   return (
     <main className="onboarding-page">
-      <header className="onboarding-top"><Link className="sf-brand auth-brand" href="/auth"><span className="sf-mark">S</span><span>STAY FIT<span className="sf-brand-dot">.</span></span></Link><Link href="/auth" className="onboarding-login">Already have an account? <strong>Log in</strong></Link></header>
+      <header className="onboarding-top"><Link className="sf-brand auth-brand" href="/auth" aria-label="Stay Fit home"><Image className="sf-wordmark" src="/stay-fit-wordmark.png" alt="Stay Fit" width={282} height={180} priority /></Link><Link href="/auth" className="onboarding-login">Already have an account? <strong>Log in</strong></Link></header>
       <section className="onboarding-card" aria-labelledby="onboarding-title">
         <div className="onboarding-progress-meta"><span>YOUR STARTING POINT</span><strong>{step + 1} / {steps.length}</strong></div>
         <div className="onboarding-progress"><span style={{ width: `${progress}%` }} /></div>

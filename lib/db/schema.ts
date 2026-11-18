@@ -36,6 +36,9 @@ export const profiles = pgTable(
     muscleFocus: text('muscleFocus').array().notNull().default([]),
     dietaryPreferences: text('dietaryPreferences').array().notNull().default([]),
     dailyStepGoal: integer('dailyStepGoal').notNull().default(8000),
+    weeklyStepGoal: integer('weeklyStepGoal').notNull().default(70000),
+    weeklyActiveDaysGoal: integer('weeklyActiveDaysGoal').notNull().default(5),
+    weeklyCalorieGoal: integer('weeklyCalorieGoal').notNull().default(3500),
     leaderboardOptIn: boolean('leaderboardOptIn').notNull().default(false),
     createdAt: timestamp('createdAt', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updatedAt', { withTimezone: true }).notNull().defaultNow(),
@@ -54,6 +57,31 @@ export const dailySteps = pgTable(
     createdAt: timestamp('createdAt', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex('stay_fit_steps_user_day_idx').on(table.userId, table.day)],
+)
+
+export const activityDays = pgTable(
+  'stay_fit_activity_days',
+  {
+    userId: text('userId').notNull(),
+    day: date('day', { mode: 'string' }).notNull(),
+    activeCalories: integer('activeCalories').notNull().default(0),
+    restingHeartRate: integer('restingHeartRate'),
+    averageHeartRate: integer('averageHeartRate'),
+    workoutMinutes: integer('workoutMinutes').notNull().default(0),
+    distanceMeters: numeric('distanceMeters', { precision: 10, scale: 2, mode: 'number' }).notNull().default(0),
+    syncedAt: timestamp('syncedAt', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('stay_fit_activity_days_user_day_idx').on(table.userId, table.day)],
+)
+
+export const appleWatchTokens = pgTable(
+  'stay_fit_watch_tokens',
+  {
+    userId: text('userId').primaryKey(),
+    tokenHash: text('tokenHash').notNull(),
+    createdAt: timestamp('createdAt', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('stay_fit_watch_tokens_hash_idx').on(table.tokenHash)],
 )
 
 export const workouts = pgTable(
