@@ -35,3 +35,34 @@
           zip -r StayFit.ipa Payload
     artifacts:
       - StayFit.ipa
+
+  android-apk:
+    name: Build Android APK
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      node: latest
+      java: 17
+    scripts:
+      - name: Build web assets and sync Android
+        script: |
+          npm install
+          echo "NEXT_PUBLIC_API_URL=https://vercel.app" > .env.local
+          rm -rf app/api proxy.ts
+          cat << 'EOF' > next.config.mjs
+          const nextConfig = { output: "export", images: { unoptimized: true } };
+          export default nextConfig;
+          EOF
+          npx next build
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+          npx cap sync android
+      - name: Build Debug APK
+        script: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk ../StayFit.apk
+    artifacts:
+      - StayFit.apk
